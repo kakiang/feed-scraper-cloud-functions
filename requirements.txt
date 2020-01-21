@@ -1,0 +1,4 @@
+google-cloud-firestore
+google-cloud-language
+feedparser
+bleach
