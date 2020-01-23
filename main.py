@@ -1,4 +1,3 @@
-import sys
 from datetime import datetime
 from time import mktime
 from bleach import clean
@@ -30,16 +29,6 @@ feed_urls = [
     'https://www.aljazeera.com/xml/rss/all.xml']
 
 
-def parse_feed(rss_url):
-    return feedparse(rss_url)
-
-
-def struct_time_to_datetime(struct_time):
-    if not struct_time:
-        return None
-    return datetime.fromtimestamp(mktime(struct_time))
-
-
 def analyze_sentiment(text_content):
     language_client = language.LanguageServiceClient()
 
@@ -54,93 +43,127 @@ def analyze_sentiment(text_content):
     return score, magnitude
 
 
-def parse_feed_entries(feed_url):
+def datetime_of(struct_time):
+    if struct_time:
+        return datetime.fromtimestamp(mktime(struct_time))
+    return None
 
-    result = parse_feed(feed_url)
-    feed = result['feed']
+
+def check_feed_entry_date(item):
+    if item.get('updated_parsed', ''):
+        struct_date = item.get('updated_parsed')
+    elif item.get('published_parsed', ''):
+        struct_date = item.get('published_parsed')
+    else:
+        return None
+
+    pubdate = datetime_of(struct_date)
+    elapsed_time = datetime.now() - pubdate
+    # exclude items that are older than 1h
+    if elapsed_time.days >= 1 or elapsed_time.seconds > 3600:
+        return None
+
+    return pubdate
+
+
+def get_parsed_feed_entry(entry):
+
+    pubdate = check_feed_entry_date(entry)
+
+    if not pubdate:
+        return None
+
+    entry_map = {}
+
+    if entry.get('title'):
+
+        score, magnitude = analyze_sentiment(entry.get('title'))
+        entry_map['sentiment_score'] = score
+        entry_map['sentiment_magnitude'] = magnitude
+        print(entry['title'])
+        print(f"Sentiment: score of {score} with magnitude of {magnitude}")
+
+    # entry_map['id'] = str(mktime(struct_date))
+    entry_map['id'] = str(mktime(datetime.timetuple(pubdate)))
+    entry_map['title'] = entry.get('title')
+    entry_map['summary'] = clean(f'''{entry.get('summary')}''', strip=True)
+    entry_map['link'] = entry.get('link')
+    entry_map['pubdate'] = pubdate
+
+    for link in entry['enclosures']:
+        if 'image' in link['type']:
+            entry_map['image'] = link['href']
+        if 'video' in link['type']:
+            entry_map['video'] = link['href']
+    else:
+        for link in entry.get('links'):
+            if 'image' in link['type']:
+                entry_map['image'] = link['href']
+            if 'video' in link['type']:
+                entry_map['video'] = link['href']
+
+    return entry_map
+
+
+def parse_feed_entries(parser_response):
+
+    feed = parser_response['feed']
 
     channel = {}
     channel['title'] = feed.get('title')
     channel['link'] = feed.get('link')
     channel['language'] = feed.get('language')
-    channel['updated_date'] = struct_time_to_datetime(
+    channel['updated_date'] = datetime_of(
         feed.get('updated_parsed', ''))
 
-    feed_items = []
-    for item in result['entries']:
+    feed_entries = []
 
-        if item.get('updated_parsed', ''):
-            struct_date = item.get('updated_parsed')
-        elif item.get('published_parsed', ''):
-            struct_date = item.get('published_parsed')
-        else:
+    for entry in parser_response['entries']:
+
+        entry_map = get_parsed_feed_entry(entry)
+        if not entry_map:
             continue
 
-        pubdate = struct_time_to_datetime(struct_date)
+        entry_map['feed'] = channel
 
-        elapsed_time = datetime.now() - pubdate
+        feed_entries.append(entry_map)
 
-        # exclude items that are older than 1h
-        if elapsed_time.days >= 1 or elapsed_time.seconds > 3600:
-            continue
-
-        item_map = {}
-
-        if item.get('title'):
-
-            score, magnitude = analyze_sentiment(item.get('title'))
-            item_map['sentiment_score'] = score
-            item_map['sentiment_magnitude'] = magnitude
-            print(f"Sentiment: score of {score} with magnitude of {magnitude}")
-
-        item_map['id'] = str(mktime(struct_date))
-        item_map['title'] = item.get('title')
-        item_map['summary'] = clean(f'''{item.get('summary')}''', strip=True)
-        item_map['link'] = item.get('link')
-        item_map['pubdate'] = pubdate
-        item_map['feed'] = channel
-
-        for link in item.get('links'):
-            if 'image' in link['type']:
-                item_map['image'] = link['href']
-            if 'video' in link['type']:
-                item_map['video'] = link['href']
-
-        feed_items.append(item_map)
-
-    return feed_items
+    return feed_entries
 
 
-def insert_firestore():
+def parse_feed():
+
+    all_feed_entries = []
+
+    for feed_url in feed_urls:
+        parser_response = feedparse(feed_url)
+        feed_entries = parse_feed_entries(parser_response)
+        if feed_entries:
+            all_feed_entries.extend(feed_entries)
+
+    return all_feed_entries
+
+
+def save_feed_entries_firestore(all_entries):
+
     db = firestore.Client()
     col_ref = db.collection('articles')
     count = 0
 
-    for url in feed_urls:
+    for entry in all_entries:
 
-        entries = parse_feed_entries(url)
-        # sorted_entries = sorted(
-        #     entries, key=lambda entry: entry["pubdate"])
-        # sorted_entries.reverse()
-
-        for entry in entries:
-
-            try:
-                doc_ref = col_ref.document(entry['id'])
-                # if doc_ref.get().exists:
-                #     continue
-                del entry['id']
-                doc_ref.set(entry, merge=True)
-                count = count + 1
-                print('-> successfully written to db', entry['title'])
-            except:
-                print('Oops!', sys.exc_info(), 'occurred.', entry['title'], )
-            # finally:
-            #     doc_ref = col_ref.document()
-            #     doc_ref.set(entry)
+        try:
+            doc_ref = col_ref.document(entry['id'])
+            del entry['id']
+            doc_ref.set(entry, merge=True)
+            count += 1
+        except Exception as e:
+            print('Error', e, entry['title'], )
+            raise
 
     print(count, 'articles added')
 
 
-def scraper(request):
-    insert_firestore()
+def parse_save_feed_entries_firestore(resquest):
+    all_entries = parse_feed()
+    save_feed_entries_firestore(all_entries)
