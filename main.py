@@ -1,5 +1,6 @@
 from datetime import datetime
 from time import mktime
+import logging
 from bleach import clean
 from feedparser import parse as feedparse
 from google.cloud import firestore
@@ -27,6 +28,10 @@ feed_urls = [
     'http://feeds.bbci.co.uk/news/world/africa/rss.xml',
     'http://www.jeuneafrique.com/feed/',
     'https://www.aljazeera.com/xml/rss/all.xml']
+
+logger = logging.getLogger(__name__)
+logger.basicConfig(format='%(asctime)s - %(message)s',
+                    datefmt='%d-%b-%y %H:%M:%S')
 
 
 def analyze_sentiment(text_content):
@@ -80,8 +85,8 @@ def get_parsed_feed_entry(entry):
         score, magnitude = analyze_sentiment(entry.get('title'))
         entry_map['sentiment_score'] = score
         entry_map['sentiment_magnitude'] = magnitude
-        print(entry['title'])
-        print(f"Sentiment: score of {score} with magnitude of {magnitude}")
+        logger.info(entry['title'])
+        logger.info(f"Sentiment: score of {score} with magnitude of {magnitude}")
 
     # entry_map['id'] = str(mktime(struct_date))
     entry_map['id'] = str(mktime(datetime.timetuple(pubdate)))
@@ -158,10 +163,9 @@ def save_feed_entries_firestore(all_entries):
             doc_ref.set(entry, merge=True)
             count += 1
         except Exception as e:
-            print('Error', e, entry['title'], )
-            raise
+            logging.exception(f"Exception on {entry['title']}")
 
-    print(count, 'articles added')
+    logging.info(f"{count} articles added")
 
 
 def parse_save_feed_entries_firestore(resquest):
