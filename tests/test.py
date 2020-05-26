@@ -1,6 +1,6 @@
 import unittest
 import time
-from main import datetime_of, check_feed_entry_date
+from src.main import datetime_of, check_feed_entry_date
 
 
 class DateTest(unittest.TestCase):
